@@ -31,7 +31,35 @@ if (apiKey) {
   });
 }
 
-let ACTIVE_CHAT_MODEL = "";
+let ACTIVE_CHAT_MODEL = "models/gemini-2.5-flash-lite";
+
+// Lazy database initialization promise
+let dbInitializedPromise: Promise<void> | null = null;
+
+function ensureDbInitialized() {
+  if (!dbInitializedPromise) {
+    dbInitializedPromise = initDB().then(() => {
+      if (apiKey) {
+        // Run model detection in the background to avoid blocking serverless cold starts
+        detectSupportedModel().catch((err: any) => {
+          console.error("❌ Dynamic Gemini model detection failed:", err.message || err);
+        });
+      }
+    });
+  }
+  return dbInitializedPromise;
+}
+
+// Global middleware to guarantee DB and AI models are initialized before processing routes
+app.use(async (req: any, res: any, next: any) => {
+  try {
+    await ensureDbInitialized();
+    next();
+  } catch (err: any) {
+    console.error("Database initialization failed:", err);
+    res.status(500).json({ error: "Database initialization failed." });
+  }
+});
 
 async function detectSupportedModel() {
   console.log(`🤖 [CivicAI] Checking API key status...`);
@@ -978,17 +1006,8 @@ app.post("/api/ai/smart-reply", authenticate, requireRole(Role.ADMIN), async (re
 
 // --- VITE FRONTEND MIDDLEWARE ---
 async function startServer() {
-  await initDB();
-
-  if (apiKey) {
-    try {
-      await detectSupportedModel();
-    } catch (err: any) {
-      console.error("❌ Dynamic Gemini model detection failed:", err.message || err);
-    }
-  } else {
-    console.warn("⚠️ GEMINI_API_KEY is not configured. AI features will be offline.");
-  }
+  // Trigger eager database and model setup locally
+  await ensureDbInitialized();
 
   if (process.env.NODE_ENV === "production") {
     app.use(express.static(path.join(process.cwd(), "dist")));
@@ -1016,6 +1035,10 @@ async function startServer() {
   });
 }
 
-startServer().catch((err) => {
-  console.error("❌ Failed to start server:", err);
-});
+if (!process.env.VERCEL) {
+  startServer().catch((err) => {
+    console.error("❌ Failed to start server:", err);
+  });
+}
+
+export default app;

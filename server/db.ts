@@ -8,11 +8,24 @@ import fs from 'fs';
 import { hashPassword, generateId } from './auth';
 import { Role } from '../src/types';
 
-const DATA_DIR = path.resolve(process.cwd(), 'server', 'data');
+const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL;
+const DATA_DIR = isVercel ? '/tmp' : path.resolve(process.cwd(), 'server', 'data');
 const DB_FILE = path.join(DATA_DIR, 'civicai.db');
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+if (isVercel) {
+  const srcDb = path.resolve(process.cwd(), 'server', 'data', 'civicai.db');
+  if (fs.existsSync(srcDb) && !fs.existsSync(DB_FILE)) {
+    try {
+      fs.copyFileSync(srcDb, DB_FILE);
+      console.log('Successfully copied civicai.db to /tmp');
+    } catch (err) {
+      console.error('Failed to copy civicai.db to /tmp:', err);
+    }
+  }
+} else {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
 }
 
 // verbose mode for sqlite
