@@ -4,8 +4,8 @@
  */
 import path from 'path';
 import fs from 'fs';
-import { hashPassword, generateId } from './auth';
-import { Role } from '../src/types';
+import { hashPassword, generateId } from './auth.js';
+import { Role } from '../src/types.js';
 
 const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL;
 const DATA_DIR = process.env.DB_DIR || (isVercel ? '/tmp' : path.resolve(process.cwd(), 'server', 'data'));

@@ -9,10 +9,10 @@ import fs from "fs";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 
-import { dbGet, dbRun, dbAll, initDB, generateId } from "./server/db";
-import { hashPassword, verifyPassword, generateToken, verifyToken } from "./server/auth";
-import { classifyComplaint, findDuplicate, generateSmartReply, mapCategoryToDepartment } from "./server/ai";
-import { Role, ComplaintStatus, Priority } from "./src/types";
+import { dbGet, dbRun, dbAll, initDB, generateId } from "./server/db.js";
+import { hashPassword, verifyPassword, generateToken, verifyToken } from "./server/auth.js";
+import { classifyComplaint, findDuplicate, generateSmartReply, mapCategoryToDepartment } from "./server/ai.js";
+import { Role, ComplaintStatus, Priority } from "./src/types.js";
 
 dotenv.config();
 

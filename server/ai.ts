@@ -7,7 +7,7 @@
  * USE_MOCK_AI is false, server.ts can additionally enrich these results
  * with a live Gemini call for the summary/evidence-analysis text.
  */
-import { Priority } from '../src/types';
+import { Priority } from '../src/types.js';
 
 const CRITICAL_KEYWORDS = [
   'gas leak', 'fire', 'explosion', 'electrocut', 'live wire', 'exposed wire',
