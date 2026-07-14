@@ -1,0 +1,6 @@
+{
+  "name": "CivicAI",
+  "description": "Intelligent Community Complaint Resolution Platform with AI-powered classification, duplicate detection, smart routing, priority prediction, and virtual assistant grounding.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
