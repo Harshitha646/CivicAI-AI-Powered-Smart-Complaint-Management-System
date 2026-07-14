@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: civicai
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    disk:
+      name: civicai-db
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DB_DIR
+        value: /data
+      - key: GEMINI_API_KEY
+        sync: false

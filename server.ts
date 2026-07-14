@@ -57,7 +57,7 @@ app.use(async (req: any, res: any, next: any) => {
     next();
   } catch (err: any) {
     console.error("Database initialization failed:", err);
-    res.status(500).json({ error: "Database initialization failed." });
+    res.status(500).json({ error: `Database initialization failed: ${err.message || err}` });
   }
 });
 

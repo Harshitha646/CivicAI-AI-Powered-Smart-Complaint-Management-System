@@ -2,24 +2,26 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
-import sqlite3 from 'sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { hashPassword, generateId } from './auth';
 import { Role } from '../src/types';
 
 const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL;
-const DATA_DIR = isVercel ? '/tmp' : path.resolve(process.cwd(), 'server', 'data');
+const DATA_DIR = process.env.DB_DIR || (isVercel ? '/tmp' : path.resolve(process.cwd(), 'server', 'data'));
 const DB_FILE = path.join(DATA_DIR, 'civicai.db');
 
-if (isVercel) {
-  const srcDb = path.resolve(process.cwd(), 'server', 'data', 'civicai.db');
+const srcDb = path.resolve(process.cwd(), 'server', 'data', 'civicai.db');
+if (DATA_DIR !== path.resolve(process.cwd(), 'server', 'data')) {
   if (fs.existsSync(srcDb) && !fs.existsSync(DB_FILE)) {
     try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
       fs.copyFileSync(srcDb, DB_FILE);
-      console.log('Successfully copied civicai.db to /tmp');
+      console.log(`Successfully copied civicai.db from ${srcDb} to ${DB_FILE}`);
     } catch (err) {
-      console.error('Failed to copy civicai.db to /tmp:', err);
+      console.error(`Failed to copy civicai.db to ${DB_FILE}:`, err);
     }
   }
 } else {
@@ -28,35 +30,65 @@ if (isVercel) {
   }
 }
 
-// verbose mode for sqlite
-const sqlite = sqlite3.verbose();
-const db = new sqlite.Database(DB_FILE);
+let db: any = null;
+let dbError: any = null;
 
-export function dbRun(sql: string, params: any[] = []): Promise<{ lastID: any; changes: any }> {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
-      if (err) reject(err);
-      else resolve({ lastID: this.lastID, changes: this.changes });
-    });
-  });
+async function getDbConnection() {
+  if (db) return db;
+  if (dbError) throw dbError;
+
+  try {
+    const sqlite3 = await import('sqlite3');
+    const sqlite = sqlite3.default.verbose();
+    db = new sqlite.Database(DB_FILE);
+    return db;
+  } catch (err: any) {
+    dbError = err;
+    console.error("Failed to load or initialize SQLite database:", err);
+    throw err;
+  }
 }
 
-export function dbGet(sql: string, params: any[] = []): Promise<any> {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
+export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: any; changes: any }> {
+  try {
+    const connection = await getDbConnection();
+    return new Promise((resolve, reject) => {
+      connection.run(sql, params, function (this: any, err: any) {
+        if (err) reject(err);
+        else resolve({ lastID: this.lastID, changes: this.changes });
+      });
     });
-  });
+  } catch (err: any) {
+    throw new Error(`Database error: SQLite is not supported in this environment (${err.message || err}). Please deploy this application to Railway or Render for persistent database support.`);
+  }
 }
 
-export function dbAll(sql: string, params: any[] = []): Promise<any[]> {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
+export async function dbGet(sql: string, params: any[] = []): Promise<any> {
+  try {
+    const connection = await getDbConnection();
+    return new Promise((resolve, reject) => {
+      connection.get(sql, params, (err: any, row: any) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
     });
-  });
+  } catch (err: any) {
+    throw new Error(`Database error: SQLite is not supported in this environment (${err.message || err}). Please deploy this application to Railway or Render for persistent database support.`);
+  }
+}
+
+export async function dbAll(sql: string, params: any[] = []): Promise<any[]> {
+  try {
+    const connection = await getDbConnection();
+    return new Promise((resolve, reject) => {
+      connection.all(sql, params, (err: any, rows: any[]) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+  } catch (err: any) {
+    throw new Error(`Database error: SQLite is not supported in this environment (${err.message || err}). Please deploy this application to Railway or Render for persistent database support.`);
+  }
 }
 
 export async function initDB() {
