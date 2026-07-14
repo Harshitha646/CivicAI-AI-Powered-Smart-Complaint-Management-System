@@ -9,8 +9,13 @@ import { Role } from '../src/types.js';
 
 const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL;
 const DATA_DIR = process.env.DB_DIR || (isVercel ? '/tmp' : path.resolve(process.cwd(), 'server', 'data'));
-const DB_FILE = path.join(DATA_DIR, 'civicai_db.json');
 
+let useSqlite = false;
+let db: any = null;
+let sqlite: any = null;
+
+// JSON DB Fallback Variables
+const JSON_DB_FILE = path.join(DATA_DIR, 'civicai_db.json');
 interface DBData {
   Users: any[];
   Departments: any[];
@@ -20,7 +25,6 @@ interface DBData {
   Notifications: any[];
   StatusHistory: any[];
 }
-
 let dbData: DBData = {
   Users: [],
   Departments: [],
@@ -31,85 +35,118 @@ let dbData: DBData = {
   StatusHistory: []
 };
 
-// Read from JSON DB file
-function loadData() {
-  if (fs.existsSync(DB_FILE)) {
+// JSON DB Helper Functions
+function loadJsonData() {
+  if (fs.existsSync(JSON_DB_FILE)) {
     try {
-      const content = fs.readFileSync(DB_FILE, 'utf-8');
+      const content = fs.readFileSync(JSON_DB_FILE, 'utf-8');
       dbData = JSON.parse(content);
     } catch (err) {
       console.error("Failed to parse JSON DB:", err);
     }
   } else {
-    saveData();
+    saveJsonData();
   }
 }
 
-// Write to JSON DB file
-function saveData() {
+function saveJsonData() {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2), 'utf-8');
+    fs.writeFileSync(JSON_DB_FILE, JSON.stringify(dbData, null, 2), 'utf-8');
   } catch (err) {
     console.error("Failed to save JSON DB:", err);
   }
 }
 
+// Get DB connection (attempts SQLite, falls back to JSON)
+async function getDbConnection() {
+  if (db) return db;
+  if (useSqlite) return null; // already failed/resolved
+
+  try {
+    const sqlite3 = await import('sqlite3');
+    sqlite = sqlite3.default.verbose();
+    const SQLiteFile = path.join(DATA_DIR, 'civicai.db');
+    
+    if (DATA_DIR !== path.resolve(process.cwd(), 'server', 'data')) {
+      const srcDb = path.resolve(process.cwd(), 'server', 'data', 'civicai.db');
+      if (fs.existsSync(srcDb) && !fs.existsSync(SQLiteFile)) {
+        try {
+          if (!fs.existsSync(DATA_DIR)) {
+            fs.mkdirSync(DATA_DIR, { recursive: true });
+          }
+          fs.copyFileSync(srcDb, SQLiteFile);
+          console.log(`Successfully copied civicai.db to ${SQLiteFile}`);
+        } catch (err) {
+          console.error(`Failed to copy civicai.db to ${SQLiteFile}:`, err);
+        }
+      }
+    } else {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+    }
+
+    db = new sqlite.Database(SQLiteFile);
+    useSqlite = true;
+    console.log("Using SQLite Database binding.");
+    return db;
+  } catch (err) {
+    console.warn("SQLite native load failed, falling back to JSON DB:", err);
+    useSqlite = false;
+    loadJsonData();
+    return null;
+  }
+}
+
 export async function dbGet(sql: string, params: any[] = []): Promise<any> {
-  loadData();
+  await getDbConnection();
+  if (useSqlite) {
+    return new Promise((resolve, reject) => {
+      db.get(sql, params, (err: any, row: any) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  }
+
+  // JSON DB Fallback implementation
   const cleanSql = sql.replace(/\s+/g, ' ').trim();
 
-  // 1. SELECT COUNT(*) as count FROM Users
   if (cleanSql.includes("SELECT COUNT(*) as count FROM Users")) {
     return { count: dbData.Users.length };
   }
-
-  // 2. SELECT * FROM Users WHERE LOWER(email) = ?
   if (cleanSql.includes("SELECT * FROM Users WHERE LOWER(email) =")) {
     const email = String(params[0]).toLowerCase().trim();
     return dbData.Users.find(u => u.email.toLowerCase().trim() === email) || null;
   }
-
-  // 3. SELECT id FROM Users WHERE LOWER(email) = ?
   if (cleanSql.includes("SELECT id FROM Users WHERE LOWER(email) =")) {
     const email = String(params[0]).toLowerCase().trim();
     const user = dbData.Users.find(u => u.email.toLowerCase().trim() === email);
     return user ? { id: user.id } : null;
   }
-
-  // 4. SELECT * FROM Users WHERE id = ?
   if (cleanSql.includes("SELECT * FROM Users WHERE id =")) {
     const id = params[0];
     return dbData.Users.find(u => u.id === id) || null;
   }
-
-  // 5. SELECT * FROM Officers WHERE userId = ?
   if (cleanSql.includes("SELECT * FROM Officers WHERE userId =")) {
     const userId = params[0];
     return dbData.Officers.find(o => o.userId === userId) || null;
   }
-
-  // 6. SELECT * FROM Officers WHERE id = ?
   if (cleanSql.includes("SELECT * FROM Officers WHERE id =")) {
     const id = params[0];
     return dbData.Officers.find(o => o.id === id) || null;
   }
-
-  // 7. SELECT * FROM Departments WHERE id = ?
   if (cleanSql.includes("SELECT * FROM Departments WHERE id =")) {
     const id = params[0];
     return dbData.Departments.find(d => d.id === id) || null;
   }
-
-  // 8. SELECT * FROM Complaints WHERE id = ?
   if (cleanSql.includes("SELECT * FROM Complaints WHERE id =")) {
     const id = params[0];
     return dbData.Complaints.find(c => c.id === id) || null;
   }
-
-  // 9. SELECT * FROM Complaints WHERE citizenId != ? AND category = ? ...
   if (cleanSql.includes("citizenId != ? AND category = ?")) {
     const citizenId = params[0];
     const category = params[1];
@@ -126,52 +163,51 @@ export async function dbGet(sql: string, params: any[] = []): Promise<any> {
     ) || null;
   }
 
-  console.warn("Unhandled dbGet query:", sql, params);
+  console.warn("Unhandled dbGet JSON query:", sql, params);
   return null;
 }
 
 export async function dbAll(sql: string, params: any[] = []): Promise<any[]> {
-  loadData();
+  await getDbConnection();
+  if (useSqlite) {
+    return new Promise((resolve, reject) => {
+      db.all(sql, params, (err: any, rows: any[]) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+  }
+
+  // JSON DB Fallback implementation
   const cleanSql = sql.replace(/\s+/g, ' ').trim();
 
-  // 1. SELECT id, name, email, role, phone, createdAt FROM Users ORDER BY createdAt DESC
   if (cleanSql.includes("SELECT id, name, email, role, phone, createdAt FROM Users")) {
     return [...dbData.Users]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .map(({ id, name, email, role, phone, createdAt }) => ({ id, name, email, role, phone, createdAt }));
   }
-
-  // 2. SELECT * FROM Complaints WHERE citizenId = ? ORDER BY createdAt DESC (or without order)
   if (cleanSql.includes("SELECT * FROM Complaints WHERE citizenId =")) {
     const citizenId = params[0];
     return [...dbData.Complaints]
       .filter(c => c.citizenId === citizenId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
-
-  // 3. SELECT * FROM Complaints WHERE assignedOfficerId = ? ORDER BY createdAt DESC
   if (cleanSql.includes("SELECT * FROM Complaints WHERE assignedOfficerId =")) {
     const officerId = params[0];
     return [...dbData.Complaints]
       .filter(c => c.assignedOfficerId === officerId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
-
-  // 4. SELECT * FROM Complaints ORDER BY createdAt DESC (or general selection)
   if (cleanSql.includes("SELECT * FROM Complaints")) {
     return [...dbData.Complaints]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
-
-  // 5. SELECT * FROM StatusHistory WHERE complaintId = ? ORDER BY timestamp ASC
   if (cleanSql.includes("SELECT * FROM StatusHistory WHERE complaintId =")) {
     const complaintId = params[0];
     return [...dbData.StatusHistory]
       .filter(h => h.complaintId === complaintId)
       .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   }
-
-  // 6. SELECT * FROM Notifications WHERE userId = ? ORDER BY createdAt DESC LIMIT 50
   if (cleanSql.includes("SELECT * FROM Notifications WHERE userId =")) {
     const userId = params[0];
     return [...dbData.Notifications]
@@ -179,31 +215,34 @@ export async function dbAll(sql: string, params: any[] = []): Promise<any[]> {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, 50);
   }
-
-  // 7. SELECT * FROM Departments
   if (cleanSql.includes("SELECT * FROM Departments")) {
     return [...dbData.Departments];
   }
-
-  // 8. SELECT * FROM Officers
   if (cleanSql.includes("SELECT * FROM Officers")) {
     return [...dbData.Officers];
   }
 
-  console.warn("Unhandled dbAll query:", sql, params);
+  console.warn("Unhandled dbAll JSON query:", sql, params);
   return [];
 }
 
 export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: any; changes: any }> {
-  loadData();
+  await getDbConnection();
+  if (useSqlite) {
+    return new Promise((resolve, reject) => {
+      db.run(sql, params, function (this: any, err: any) {
+        if (err) reject(err);
+        else resolve({ lastID: this.lastID, changes: this.changes });
+      });
+    });
+  }
+
+  // JSON DB Fallback implementation
   const cleanSql = sql.replace(/\s+/g, ' ').trim();
 
-  // 1. PRAGMA foreign_keys = ON;
   if (cleanSql.includes("PRAGMA")) {
     return { lastID: null, changes: 0 };
   }
-
-  // 2. INSERT INTO Users
   if (cleanSql.includes("INSERT INTO Users")) {
     const hasDept = cleanSql.includes("departmentId");
     const userItem: any = {
@@ -217,11 +256,9 @@ export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: 
       createdAt: hasDept ? params[7] : params[6],
     };
     dbData.Users.push(userItem);
-    saveData();
+    saveJsonData();
     return { lastID: userItem.id, changes: 1 };
   }
-
-  // 3. INSERT INTO Departments
   if (cleanSql.includes("INSERT INTO Departments")) {
     const dept = {
       id: params[0],
@@ -231,11 +268,9 @@ export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: 
       headName: params[4],
     };
     dbData.Departments.push(dept);
-    saveData();
+    saveJsonData();
     return { lastID: dept.id, changes: 1 };
   }
-
-  // 4. INSERT INTO Officers
   if (cleanSql.includes("INSERT INTO Officers")) {
     const officer = {
       id: params[0],
@@ -249,11 +284,9 @@ export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: 
       rating: params[8],
     };
     dbData.Officers.push(officer);
-    saveData();
+    saveJsonData();
     return { lastID: officer.id, changes: 1 };
   }
-
-  // 5. INSERT INTO Complaints
   if (cleanSql.includes("INSERT INTO Complaints")) {
     const c = {
       id: params[0],
@@ -291,11 +324,9 @@ export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: 
       citizenFeedback: null,
     };
     dbData.Complaints.push(c);
-    saveData();
+    saveJsonData();
     return { lastID: c.id, changes: 1 };
   }
-
-  // 6. UPDATE Complaints SET upvotedUserIds = ?, upvotesCount = ?, priority = ?, updatedAt = ? WHERE id = ?
   if (cleanSql.includes("UPDATE Complaints SET upvotedUserIds =")) {
     const upvotedUserIds = params[0];
     const upvotesCount = params[1];
@@ -308,13 +339,11 @@ export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: 
       c.upvotesCount = upvotesCount;
       c.priority = priority;
       c.updatedAt = updatedAt;
-      saveData();
+      saveJsonData();
       return { lastID: null, changes: 1 };
     }
     return { lastID: null, changes: 0 };
   }
-
-  // 7. INSERT OR REPLACE INTO Feedback
   if (cleanSql.includes("INSERT OR REPLACE INTO Feedback")) {
     const f = {
       id: params[0],
@@ -330,11 +359,9 @@ export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: 
     } else {
       dbData.Feedback.push(f);
     }
-    saveData();
+    saveJsonData();
     return { lastID: f.id, changes: 1 };
   }
-
-  // 8. UPDATE Complaints SET citizenRating = ?, citizenFeedback = ?, updatedAt = ? WHERE id = ?
   if (cleanSql.includes("UPDATE Complaints SET citizenRating =")) {
     const citizenRating = params[0];
     const citizenFeedback = params[1];
@@ -345,13 +372,11 @@ export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: 
       c.citizenRating = citizenRating;
       c.citizenFeedback = citizenFeedback;
       c.updatedAt = updatedAt;
-      saveData();
+      saveJsonData();
       return { lastID: null, changes: 1 };
     }
     return { lastID: null, changes: 0 };
   }
-
-  // 9. UPDATE Complaints SET assignedOfficerId = ?, assignedOfficerName = ?, departmentId = ?, departmentName = ?, status = ?, estimatedResolutionTime = ?, updatedAt = ? WHERE id = ?
   if (cleanSql.includes("UPDATE Complaints SET assignedOfficerId =")) {
     const assignedOfficerId = params[0];
     const assignedOfficerName = params[1];
@@ -370,13 +395,11 @@ export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: 
       c.status = status;
       c.estimatedResolutionTime = estimatedResolutionTime;
       c.updatedAt = updatedAt;
-      saveData();
+      saveJsonData();
       return { lastID: null, changes: 1 };
     }
     return { lastID: null, changes: 0 };
   }
-
-  // 10. UPDATE Complaints SET status = ?, updatedAt = ? WHERE id = ?
   if (cleanSql.includes("UPDATE Complaints SET status = ?, updatedAt = ? WHERE id = ?")) {
     const status = params[0];
     const updatedAt = params[1];
@@ -385,13 +408,11 @@ export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: 
     if (c) {
       c.status = status;
       c.updatedAt = updatedAt;
-      saveData();
+      saveJsonData();
       return { lastID: null, changes: 1 };
     }
     return { lastID: null, changes: 0 };
   }
-
-  // 11. UPDATE Complaints SET status = ?, priority = ?, updatedAt = ? WHERE id = ?
   if (cleanSql.includes("UPDATE Complaints SET status = ?, priority = ?, updatedAt = ? WHERE id = ?")) {
     const status = params[0];
     const priority = params[1];
@@ -402,13 +423,11 @@ export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: 
       c.status = status;
       c.priority = priority;
       c.updatedAt = updatedAt;
-      saveData();
+      saveJsonData();
       return { lastID: null, changes: 1 };
     }
     return { lastID: null, changes: 0 };
   }
-
-  // 12. INSERT INTO StatusHistory
   if (cleanSql.includes("INSERT INTO StatusHistory")) {
     const hasImage = params.length === 8;
     const historyItem = {
@@ -422,11 +441,9 @@ export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: 
       timestamp: hasImage ? params[7] : params[6],
     };
     dbData.StatusHistory.push(historyItem);
-    saveData();
+    saveJsonData();
     return { lastID: historyItem.id, changes: 1 };
   }
-
-  // 13. INSERT INTO Notifications
   if (cleanSql.includes("INSERT INTO Notifications")) {
     const notif = {
       id: params[0],
@@ -438,11 +455,9 @@ export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: 
       createdAt: params[6],
     };
     dbData.Notifications.push(notif);
-    saveData();
+    saveJsonData();
     return { lastID: notif.id, changes: 1 };
   }
-
-  // 14. UPDATE Notifications SET read = 1 WHERE userId = ?
   if (cleanSql.includes("UPDATE Notifications SET read = 1")) {
     const userId = params[0];
     let changes = 0;
@@ -453,17 +468,150 @@ export async function dbRun(sql: string, params: any[] = []): Promise<{ lastID: 
       }
     });
     if (changes > 0) {
-      saveData();
+      saveJsonData();
     }
     return { lastID: null, changes };
   }
 
-  console.warn("Unhandled dbRun query:", sql, params);
+  console.warn("Unhandled dbRun JSON query:", sql, params);
   return { lastID: null, changes: 0 };
 }
 
 export async function initDB() {
-  loadData();
+  await getDbConnection();
+  if (useSqlite) {
+    // Enable foreign keys
+    await dbRun('PRAGMA foreign_keys = ON;');
+    
+    // Create Users table
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS Users (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        passwordHash TEXT NOT NULL,
+        role TEXT NOT NULL,
+        phone TEXT,
+        departmentId TEXT,
+        createdAt TEXT NOT NULL
+      )
+    `);
+
+    // Create Departments table
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS Departments (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        code TEXT UNIQUE NOT NULL,
+        description TEXT,
+        headName TEXT
+      )
+    `);
+
+    // Create Officers table
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS Officers (
+        id TEXT PRIMARY KEY,
+        userId TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        departmentId TEXT NOT NULL,
+        departmentName TEXT NOT NULL,
+        phone TEXT,
+        status TEXT NOT NULL,
+        rating REAL NOT NULL,
+        FOREIGN KEY (userId) REFERENCES Users(id) ON DELETE CASCADE,
+        FOREIGN KEY (departmentId) REFERENCES Departments(id)
+      )
+    `);
+
+    // Create Complaints table
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS Complaints (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        category TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        area TEXT NOT NULL,
+        street TEXT NOT NULL,
+        landmark TEXT,
+        city TEXT NOT NULL,
+        pincode TEXT NOT NULL,
+        imageUrl TEXT,
+        videoUrl TEXT,
+        preferredContact TEXT NOT NULL,
+        status TEXT NOT NULL,
+        citizenId TEXT NOT NULL,
+        citizenName TEXT NOT NULL,
+        citizenEmail TEXT NOT NULL,
+        assignedOfficerId TEXT,
+        assignedOfficerName TEXT,
+        departmentId TEXT,
+        departmentName TEXT,
+        aiSentiment TEXT,
+        aiSummary TEXT,
+        hazardSeverity REAL,
+        materialsDetected TEXT,
+        aiEvidenceAnalysis TEXT,
+        upvotesCount INTEGER DEFAULT 0,
+        upvotedUserIds TEXT DEFAULT '[]',
+        estimatedResolutionTime TEXT,
+        citizenRating INTEGER,
+        citizenFeedback TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        FOREIGN KEY (citizenId) REFERENCES Users(id) ON DELETE CASCADE,
+        FOREIGN KEY (assignedOfficerId) REFERENCES Officers(id) ON DELETE SET NULL,
+        FOREIGN KEY (departmentId) REFERENCES Departments(id) ON DELETE SET NULL
+      )
+    `);
+
+    // Create Feedback table
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS Feedback (
+        id TEXT PRIMARY KEY,
+        complaintId TEXT UNIQUE NOT NULL,
+        citizenId TEXT NOT NULL,
+        rating INTEGER NOT NULL,
+        feedback TEXT,
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY (complaintId) REFERENCES Complaints(id) ON DELETE CASCADE,
+        FOREIGN KEY (citizenId) REFERENCES Users(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create Notifications table
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS Notifications (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        read INTEGER NOT NULL DEFAULT 0,
+        type TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY (userId) REFERENCES Users(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create StatusHistory table
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS StatusHistory (
+        id TEXT PRIMARY KEY,
+        complaintId TEXT NOT NULL,
+        status TEXT NOT NULL,
+        updatedBy TEXT NOT NULL,
+        updatedByName TEXT NOT NULL,
+        remarks TEXT NOT NULL,
+        imageUrl TEXT,
+        timestamp TEXT NOT NULL,
+        FOREIGN KEY (complaintId) REFERENCES Complaints(id) ON DELETE CASCADE,
+        FOREIGN KEY (updatedBy) REFERENCES Users(id) ON DELETE CASCADE
+      )
+    `);
+  }
+
   await seedDB();
 }
 
